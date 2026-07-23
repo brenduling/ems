@@ -1006,58 +1006,6 @@ const crud = {
         api.saveDatabase();
     },
 
-    handleGuestRegistrationSubmit(e) {
-        e.preventDefault();
-        // Guest registration is allowed for clients — no admin check
-        const eId = document.getElementById('guest-reg-event-id').value;
-        const name = document.getElementById('guest-reg-name').value.trim();
-        const batch = document.getElementById('guest-reg-batch').value;
-        const course = "BSIT";
-        const yearLevel = utils.getBatchYearLevel(batch);
-        const profile = document.getElementById('guest-reg-profile').value.trim();
-
-        if (!eId || !name || !batch || !course || !yearLevel) {
-            ui.showToast("All fields marked with * are required.", "danger");
-            return;
-        }
-
-        // Prevent duplicate registration for matching name + event
-        let participant = state.db.participants.find(p => p.name.toLowerCase() === name.toLowerCase());
-        
-        if (participant) {
-            const registered = state.db.registrations.some(r => r.eventId === eId && r.participantId === participant.id);
-            if (registered) {
-                ui.showToast("You are already registered for this event!", "danger");
-                return;
-            }
-        } else {
-            // Create a new participant record
-            participant = {
-                id: utils.generateId('PAR', state.db.participants),
-                name: name,
-                batch: batch,
-                course: course,
-                yearLevel: yearLevel,
-                profile: profile
-            };
-            state.db.participants.push(participant);
-        }
-
-        const newReg = {
-            id: utils.generateId('REG', state.db.registrations),
-            eventId: eId,
-            participantId: participant.id
-        };
-
-        state.db.registrations.push(newReg);
-        
-        const eObj = state.db.events.find(evt => evt.id === eId);
-        ui.showToast(`Congratulations! You have joined "${eObj?.name || 'Event'}"!`, "success");
-
-        ui.closeModal('guest-registration-modal');
-        api.saveDatabase();
-    },
-
     deleteRegistration(regId) {
         if (!this.requireAdmin()) return;
         const regObj = state.db.registrations.find(r => r.id === regId);
@@ -2120,11 +2068,7 @@ const events = {
                                     ${utils.getSvg('trash')} Delete
                                 </button>
                             ` : `
-                                ${evt.status === 'Active' ? `
-                                <button class="btn btn-primary" onclick="events.openGuestRegistrationModal('${evt.id}')">
-                                    ${utils.getSvg('plus')} Join This Event
-                                </button>` : ''}
-                            `}
+
                         </div>
                     </div>
                 </div>
@@ -2231,7 +2175,7 @@ const events = {
                         `;
                     }).join('') : `
                         <div class="panel-card" style="padding: 2rem;">
-                            ${ui.renderEmptyState("No registered students yet", state.role === 'admin' ? "Use 'Register Participant' above to add students to this event." : "Be the first to join! Click 'Join This Event' above.")}
+                            ${ui.renderEmptyState("No registered students yet", state.role === 'admin' ? "Use 'Register Participant' above to add students to this event." : "No participants have been registered for this event yet.")}
                         </div>
                     `}
                 </div>
@@ -2246,38 +2190,9 @@ const events = {
         headerEl.classList.toggle('expanded');
     },
 
-    openGuestRegistrationModal(eventId) {
-        const evt = state.db.events.find(e => e.id === eventId);
-        if (!evt) return;
-
-        document.getElementById('guest-reg-event-id').value = eventId;
-        document.getElementById('guest-reg-modal-title').textContent = `Join "${evt.name}"`;
-        document.getElementById('guest-reg-name').value = '';
-        document.getElementById('guest-reg-course').value = 'BSIT';
-        document.getElementById('guest-reg-year').value = '';
-        document.getElementById('guest-reg-profile').value = '';
-
-        // Load batches dropdown options dynamically
-        const batchDropdown = document.getElementById('guest-reg-batch');
-        batchDropdown.innerHTML = '<option value="">Select batch</option>' +
-            state.db.batches.map(b => `<option value="${b.name}">${b.name} - ${utils.formatYearLevel(b.yearLevel)}</option>`).join('');
-        batchDropdown.onchange = () => {
-            document.getElementById('guest-reg-year').value = utils.getBatchYearLevel(batchDropdown.value);
-        };
-
-        ui.openModal('guest-registration-modal');
-    }
-};
-
 // ====================================================
 // 10. PARTICIPANTS LAYER
-// ====================================================
-
-const participants = {
-    filters: {
-        query: '',
-        batch: 'All'
-    },
+// =================================================
 
     render(container) {
         container.innerHTML = `
