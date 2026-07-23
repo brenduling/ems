@@ -12,7 +12,8 @@ const CONFIG = {
     STORAGE_KEYS: {
         API_KEY: 'ems_jsonbin_api_key',
         BIN_ID: 'ems_jsonbin_bin_id',
-        IS_DEMO: 'ems_jsonbin_is_demo'
+        IS_DEMO: 'ems_jsonbin_is_demo',
+        LAST_SYNC: 'ems_last_sync_signal'
     },
     // Seed Database for Demo / Mock mode
     MOCK_DB: {
@@ -80,7 +81,7 @@ const CONFIG = {
                 id: "PAR002",
                 name: "Lovelace Martinez",
                 batch: "Alpha",
-                course: "BSCS",
+                course: "BSIT",
                 yearLevel: "3",
                 profile: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80"
             },
@@ -96,7 +97,7 @@ const CONFIG = {
                 id: "PAR004",
                 name: "Grace Hopper",
                 batch: "Gamma",
-                course: "BSCS",
+                course: "BSIT",
                 yearLevel: "4",
                 profile: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=150&auto=format&fit=crop&q=80"
             }
@@ -108,9 +109,9 @@ const CONFIG = {
             { id: "REG004", eventId: "EVT003", participantId: "PAR002" }
         ],
         batches: [
-            { id: "BAT001", name: "Beta", logo: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80" },
-            { id: "BAT002", name: "Alpha", logo: "https://images.unsplash.com/photo-1618005198143-e5283b519a7f?w=150&auto=format&fit=crop&q=80" },
-            { id: "BAT003", name: "Gamma", logo: "https://images.unsplash.com/photo-1618005134738-7023f93c9d80?w=150&auto=format&fit=crop&q=80" }
+            { id: "BAT001", name: "Beta", yearLevel: "4", logo: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80" },
+            { id: "BAT002", name: "Alpha", yearLevel: "3", logo: "https://images.unsplash.com/photo-1618005198143-e5283b519a7f?w=150&auto=format&fit=crop&q=80" },
+            { id: "BAT003", name: "Gamma", yearLevel: "2", logo: "https://images.unsplash.com/photo-1618005134738-7023f93c9d80?w=150&auto=format&fit=crop&q=80" }
         ],
         facilitators: ["John", "Mary", "Alex", "David", "Sarah"],
         advisers: ["Mr. Cruz", "Engr. Santos", "Dr. Ramos", "Prof. Diaz"]
@@ -120,6 +121,7 @@ const CONFIG = {
 // Application State
 const state = {
     activeTab: 'dashboard',
+    role: 'admin', // 'admin' or 'client'
     db: {
         events: [],
         participants: [],
@@ -142,6 +144,8 @@ let editingSchedules = [];
 let editingFacilitators = [];
 let editingAdvisers = [];
 let currentConfirmCallback = null;
+let syncPollTimer = null;
+let lastRemoteSnapshot = '';
 
 // ====================================================
 // 2. API (JSONBin.io Integration)
@@ -203,6 +207,7 @@ const api = {
         if (state.config.isDemo) {
             state.db = JSON.parse(localStorage.getItem('ems_local_db')) || JSON.parse(JSON.stringify(CONFIG.MOCK_DB));
             this.ensureSchema();
+            lastRemoteSnapshot = JSON.stringify(state.db);
             return;
         }
 
@@ -216,20 +221,24 @@ const api = {
             const payload = await res.json();
             state.db = payload.record;
             this.ensureSchema();
+            lastRemoteSnapshot = JSON.stringify(state.db);
         } catch (err) {
             console.error(err);
             ui.showToast("Sync failed. Operating in offline/demo mode.", "danger");
             state.config.isDemo = true;
             state.db = JSON.parse(localStorage.getItem('ems_local_db')) || JSON.parse(JSON.stringify(CONFIG.MOCK_DB));
             this.ensureSchema();
+            lastRemoteSnapshot = JSON.stringify(state.db);
         } finally {
             ui.hideLoading();
         }
     },
 
     async saveDatabase() {
+        this.ensureSchema();
         // Backup locally to simulate save persistence even in demo mode
         localStorage.setItem('ems_local_db', JSON.stringify(state.db));
+        localStorage.setItem(CONFIG.STORAGE_KEYS.LAST_SYNC, String(Date.now()));
 
         if (state.config.isDemo) {
             ui.showToast("Changes saved to local memory", "warning");
@@ -245,6 +254,7 @@ const api = {
                 body: JSON.stringify(state.db)
             });
             if (!res.ok) throw new Error("Sync failed.");
+            lastRemoteSnapshot = JSON.stringify(state.db);
             ui.showToast("Synchronized with cloud server successfully", "success");
             app.router(state.activeTab); // Re-render view
         } catch (err) {
@@ -253,6 +263,36 @@ const api = {
             app.router(state.activeTab); // Re-render view
         } finally {
             ui.hideLoading();
+        }
+    },
+
+    async refreshFromServer({ silent = true } = {}) {
+        if (state.config.isDemo || !state.config.apiKey || !state.config.binId) return;
+
+        try {
+            const res = await fetch(`https://api.jsonbin.io/v3/b/${state.config.binId}/latest`, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (!res.ok) throw new Error("Failed to refresh database.");
+
+            const payload = await res.json();
+            const incomingDb = payload.record || {};
+            const incomingSnapshot = JSON.stringify(incomingDb);
+
+            if (incomingSnapshot && incomingSnapshot !== lastRemoteSnapshot) {
+                state.db = incomingDb;
+                this.ensureSchema();
+                lastRemoteSnapshot = JSON.stringify(state.db);
+                localStorage.setItem('ems_local_db', JSON.stringify(state.db));
+                ui.renderActiveTab();
+                ui.showToast("New shared updates loaded.", "success");
+            }
+        } catch (err) {
+            console.error(err);
+            if (!silent) {
+                ui.showToast("Could not refresh shared updates.", "danger");
+            }
         }
     },
 
@@ -273,6 +313,16 @@ const api = {
         if (state.db.advisers.length === 0) {
             state.db.advisers = ["Mr. Cruz", "Engr. Santos", "Dr. Ramos", "Prof. Diaz"];
         }
+        state.db.batches.forEach((batch, index) => {
+            if (!batch.yearLevel) {
+                batch.yearLevel = String(((index % 4) + 1));
+            }
+        });
+        state.db.participants.forEach(participant => {
+            const batch = state.db.batches.find(b => b.name.toLowerCase() === String(participant.batch || '').toLowerCase());
+            participant.course = "BSIT";
+            participant.yearLevel = batch?.yearLevel || participant.yearLevel || "";
+        });
     }
 };
 
@@ -297,6 +347,21 @@ const utils = {
         if (!dateStr) return '';
         const options = { year: 'numeric', month: 'short', day: 'numeric' };
         return new Date(dateStr).toLocaleDateString('en-US', options);
+    },
+
+    formatYearLevel(yearLevel) {
+        const labels = {
+            "1": "1st Year",
+            "2": "2nd Year",
+            "3": "3rd Year",
+            "4": "4th Year"
+        };
+        return labels[String(yearLevel)] || "Unassigned Year";
+    },
+
+    getBatchYearLevel(batchName) {
+        const batch = state.db.batches.find(b => b.name.toLowerCase() === String(batchName || '').toLowerCase());
+        return batch?.yearLevel || "";
     },
 
     getInitials(name) {
@@ -365,6 +430,53 @@ const ui = {
             settings: 'System Settings'
         };
 
+        // Enforce role-based routing constraints
+        const adminTabs = ['settings'];
+        if (state.role === 'client') {
+            // Hide admin sidebar links
+            document.querySelectorAll('#sidebar .nav-item').forEach(item => {
+                const tab = item.getAttribute('data-tab');
+                if (adminTabs.includes(tab)) {
+                    item.style.display = 'none';
+                } else {
+                    item.style.display = 'flex';
+                }
+            });
+            // Redirect to dashboard if trying to access admin tabs
+            if (adminTabs.includes(state.activeTab)) {
+                state.activeTab = 'dashboard';
+            }
+        } else {
+            // Show all tabs
+            document.querySelectorAll('#sidebar .nav-item').forEach(item => {
+                item.style.display = 'flex';
+            });
+        }
+
+        // Update profile visual display based on role
+        const avatarBlock = document.getElementById('profile-avatar-char');
+        const nameBlock = document.getElementById('profile-display-name');
+        const roleBlock = document.getElementById('profile-display-role');
+        const profileBlock = document.getElementById('profile-block');
+        const roleDropdown = document.getElementById('role-selector-dropdown');
+        
+        // Match dropdown value
+        if (roleDropdown) {
+            roleDropdown.value = state.role;
+        }
+
+        if (state.role === 'client') {
+            avatarBlock.textContent = 'CV';
+            nameBlock.textContent = 'Client Visitor';
+            roleBlock.textContent = 'Guest Attendee';
+            profileBlock.style.pointerEvents = 'none'; // Disable Settings page click
+        } else {
+            avatarBlock.textContent = 'SA';
+            nameBlock.textContent = 'System Admin';
+            roleBlock.textContent = 'EMS Manager';
+            profileBlock.style.pointerEvents = 'auto';
+        }
+
         // Update nav title
         document.getElementById('page-title').textContent = titleMap[state.activeTab] || 'Dashboard';
 
@@ -381,7 +493,7 @@ const ui = {
         document.getElementById('sidebar').classList.remove('open');
 
         // Toggle Demo Banner
-        document.getElementById('demo-banner').style.display = state.config.isDemo ? 'block' : 'none';
+        document.getElementById('demo-banner').style.display = (state.config.isDemo && state.role === 'admin') ? 'block' : 'none';
 
         // Load specific renderer
         const container = document.getElementById('main-content');
@@ -501,9 +613,18 @@ const ui = {
 // ====================================================
 
 const crud = {
+    requireAdmin() {
+        if (state.role !== 'admin') {
+            ui.showToast("Client view is read-only.", "warning");
+            return false;
+        }
+        return true;
+    },
+
     // EVENTS CRUD
     handleEventSubmit(e) {
         e.preventDefault();
+        if (!this.requireAdmin()) return;
 
         const mode = document.getElementById('event-form-mode').value;
         const eventId = document.getElementById('event-id').value;
@@ -661,6 +782,7 @@ const crud = {
     },
 
     duplicateEvent(eventId) {
+        if (!this.requireAdmin()) return;
         const original = state.db.events.find(evt => evt.id === eventId);
         if (!original) return;
 
@@ -677,6 +799,7 @@ const crud = {
     },
 
     archiveRestoreEvent(eventId) {
+        if (!this.requireAdmin()) return;
         const eventObj = state.db.events.find(evt => evt.id === eventId);
         if (!eventObj) return;
 
@@ -692,6 +815,7 @@ const crud = {
     },
 
     deleteEvent(eventId) {
+        if (!this.requireAdmin()) return;
         const eventObj = state.db.events.find(evt => evt.id === eventId);
         if (!eventObj) return;
 
@@ -712,22 +836,45 @@ const crud = {
     // PARTICIPANTS CRUD
     handleParticipantSubmit(e) {
         e.preventDefault();
+        if (!this.requireAdmin()) return;
 
         const mode = document.getElementById('participant-form-mode').value;
         const participantId = document.getElementById('participant-id').value;
+        const selectedBatch = document.getElementById('participant-batch').value;
+        const selectedEventId = document.getElementById('participant-event')?.value || "";
+        const yearLevel = utils.getBatchYearLevel(selectedBatch);
+
+        if (!selectedBatch || !yearLevel) {
+            ui.showToast("Choose a batch with an assigned year level.", "danger");
+            return;
+        }
+
+        if (mode === 'create' && !selectedEventId) {
+            ui.showToast("Choose an active event to register this participant.", "danger");
+            return;
+        }
 
         const newParticipant = {
             id: mode === 'create' ? utils.generateId('PAR', state.db.participants) : participantId,
             name: document.getElementById('participant-name').value.trim(),
-            batch: document.getElementById('participant-batch').value,
-            course: document.getElementById('participant-course').value.trim(),
-            yearLevel: document.getElementById('participant-year').value,
+            batch: selectedBatch,
+            course: "BSIT",
+            yearLevel: yearLevel,
             profile: document.getElementById('participant-profile').value.trim()
         };
 
         if (mode === 'create') {
             state.db.participants.push(newParticipant);
-            ui.showToast(`Participant ${newParticipant.name} created!`, "success");
+            const alreadyRegistered = state.db.registrations.some(r => r.eventId === selectedEventId && r.participantId === newParticipant.id);
+            if (!alreadyRegistered) {
+                state.db.registrations.push({
+                    id: utils.generateId('REG', state.db.registrations),
+                    eventId: selectedEventId,
+                    participantId: newParticipant.id
+                });
+            }
+            const eventObj = state.db.events.find(evt => evt.id === selectedEventId);
+            ui.showToast(`${newParticipant.name} added and registered to ${eventObj?.name || 'the selected event'}.`, "success");
         } else {
             const idx = state.db.participants.findIndex(p => p.id === participantId);
             if (idx !== -1) {
@@ -741,6 +888,7 @@ const crud = {
     },
 
     deleteParticipant(participantId) {
+        if (!this.requireAdmin()) return;
         const pObj = state.db.participants.find(p => p.id === participantId);
         if (!pObj) return;
 
@@ -761,8 +909,15 @@ const crud = {
     // BATCH CRUD (Settings layer helper)
     handleBatchSubmit(e) {
         e.preventDefault();
+        if (!this.requireAdmin()) return;
         const batchName = document.getElementById('batch-name').value.trim();
+        const batchYear = document.getElementById('batch-year').value;
         const batchLogo = document.getElementById('batch-logo').value.trim();
+
+        if (!batchYear) {
+            ui.showToast("Assign a year level to this batch.", "danger");
+            return;
+        }
 
         // Prevent duplicate batch names
         if (state.db.batches.some(b => b.name.toLowerCase() === batchName.toLowerCase())) {
@@ -773,16 +928,19 @@ const crud = {
         const newBatch = {
             id: utils.generateId('BAT', state.db.batches),
             name: batchName,
+            yearLevel: batchYear,
             logo: batchLogo
         };
 
         state.db.batches.push(newBatch);
         ui.showToast(`Batch ${batchName} added successfully!`, "success");
+        e.target.reset();
         ui.closeModal('batch-modal');
         api.saveDatabase();
     },
 
     deleteBatch(batchId) {
+        if (!this.requireAdmin()) return;
         const batchObj = state.db.batches.find(b => b.id === batchId);
         if (!batchObj) return;
 
@@ -809,6 +967,7 @@ const crud = {
     // REGISTRATIONS CRUD
     handleRegistrationSubmit(e) {
         e.preventDefault();
+        if (!this.requireAdmin()) return;
         const pId = document.getElementById('reg-participant-select').value;
         const eId = document.getElementById('reg-event-select').value;
 
@@ -840,7 +999,60 @@ const crud = {
         api.saveDatabase();
     },
 
+    handleGuestRegistrationSubmit(e) {
+        e.preventDefault();
+        if (!this.requireAdmin()) return;
+        const eId = document.getElementById('guest-reg-event-id').value;
+        const name = document.getElementById('guest-reg-name').value.trim();
+        const batch = document.getElementById('guest-reg-batch').value;
+        const course = "BSIT";
+        const yearLevel = utils.getBatchYearLevel(batch);
+        const profile = document.getElementById('guest-reg-profile').value.trim();
+
+        if (!eId || !name || !batch || !course || !yearLevel) {
+            ui.showToast("All fields marked with * are required.", "danger");
+            return;
+        }
+
+        // Prevent duplicate registration for matching name + event
+        let participant = state.db.participants.find(p => p.name.toLowerCase() === name.toLowerCase());
+        
+        if (participant) {
+            const registered = state.db.registrations.some(r => r.eventId === eId && r.participantId === participant.id);
+            if (registered) {
+                ui.showToast("You are already registered for this event!", "danger");
+                return;
+            }
+        } else {
+            // Create a new participant record
+            participant = {
+                id: utils.generateId('PAR', state.db.participants),
+                name: name,
+                batch: batch,
+                course: course,
+                yearLevel: yearLevel,
+                profile: profile
+            };
+            state.db.participants.push(participant);
+        }
+
+        const newReg = {
+            id: utils.generateId('REG', state.db.registrations),
+            eventId: eId,
+            participantId: participant.id
+        };
+
+        state.db.registrations.push(newReg);
+        
+        const eObj = state.db.events.find(evt => evt.id === eId);
+        ui.showToast(`Congratulations! You have joined "${eObj?.name || 'Event'}"!`, "success");
+
+        ui.closeModal('guest-registration-modal');
+        api.saveDatabase();
+    },
+
     deleteRegistration(regId) {
+        if (!this.requireAdmin()) return;
         const regObj = state.db.registrations.find(r => r.id === regId);
         if (!regObj) return;
 
@@ -1018,7 +1230,7 @@ const search = {
                             </div>
                             <h4 style="font-weight: 700; font-size:1rem;">${utils.escapeHtml(p.name)}</h4>
                             <span class="roster-chip" style="background-color: var(--success-light); border-color: var(--success);">${p.batch}</span>
-                            <span style="font-size: 0.75rem; color:var(--text-muted);">${p.course} - Year ${p.yearLevel}</span>
+                            <span style="font-size: 0.75rem; color:var(--text-muted);">${p.course} - ${utils.formatYearLevel(p.yearLevel)}</span>
                         </div>
                         
                         <div style="flex: 1; min-width: 250px; display: flex; flex-direction: column; gap: 0.75rem;">
@@ -1203,7 +1415,7 @@ const reports = {
         // B. Participants per Batch
         const pPerBatch = state.db.batches.map(b => {
             const count = state.db.participants.filter(p => p.batch.toLowerCase() === b.name.toLowerCase()).length;
-            return { name: b.name, count };
+            return { name: b.name, yearLevel: b.yearLevel, count };
         }).sort((a, b) => b.count - a.count);
 
         // C. Events per Category
@@ -1314,6 +1526,7 @@ const reports = {
                         <thead>
                             <tr>
                                 <th>Batch Name</th>
+                                <th>Year Level</th>
                                 <th style="text-align:right;">Total Students</th>
                             </tr>
                         </thead>
@@ -1321,9 +1534,10 @@ const reports = {
                             ${pPerBatch.map(row => `
                                 <tr>
                                     <td><strong>${utils.escapeHtml(row.name)}</strong></td>
+                                    <td>${utils.formatYearLevel(row.yearLevel)}</td>
                                     <td style="text-align:right; font-weight:700; color: var(--success);">${row.count}</td>
                                 </tr>
-                            `).join('') || '<tr><td colspan="2">No batches found</td></tr>'}
+                            `).join('') || '<tr><td colspan="3">No batches found</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -1608,7 +1822,7 @@ const dashboard = {
                             ${utils.getSvg('link')}
                             Recent Registrations
                         </h3>
-                        <button class="panel-action-btn" onclick="app.router('registrations')">View Log</button>
+                        ${state.role === 'admin' ? `<button class="panel-action-btn" onclick="app.router('registrations')">View Log</button>` : ''}
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:1.25rem;">
@@ -1674,11 +1888,12 @@ const events = {
                         <option value="created" ${this.filters.sort === 'created' ? 'selected' : ''}>Sort by Date Created</option>
                     </select>
                 </div>
-                
+                ${state.role === 'admin' ? `
                 <button class="btn btn-primary" onclick="events.openFormModal('create')">
                     ${utils.getSvg('plus')}
                     Create Event
                 </button>
+                ` : ''}
             </div>
 
             <!-- List Grid -->
@@ -1773,18 +1988,24 @@ const events = {
                     </div>
 
                     <div class="event-card-actions">
-                        <button class="btn btn-secondary btn-icon-only" title="Duplicate Event" onclick="crud.duplicateEvent('${evt.id}')">
-                            ${utils.getSvg('duplicate')}
-                        </button>
-                        <button class="btn btn-secondary btn-icon-only" title="${isArchived ? 'Restore Event' : 'Archive Event'}" onclick="crud.archiveRestoreEvent('${evt.id}')">
-                            ${isArchived ? utils.getSvg('restore') : utils.getSvg('archive')}
-                        </button>
-                        <button class="btn btn-secondary btn-icon-only" title="Edit Event" onclick="events.openFormModal('edit', '${evt.id}')">
-                            ${utils.getSvg('pencil')}
-                        </button>
-                        <button class="btn btn-secondary btn-icon-only" title="Delete Event" onclick="crud.deleteEvent('${evt.id}')" style="color:var(--danger);">
-                            ${utils.getSvg('trash')}
-                        </button>
+                        ${state.role === 'admin' ? `
+                            <button class="btn btn-secondary btn-icon-only" title="Duplicate Event" onclick="crud.duplicateEvent('${evt.id}')">
+                                ${utils.getSvg('duplicate')}
+                            </button>
+                            <button class="btn btn-secondary btn-icon-only" title="${isArchived ? 'Restore Event' : 'Archive Event'}" onclick="crud.archiveRestoreEvent('${evt.id}')">
+                                ${isArchived ? utils.getSvg('restore') : utils.getSvg('archive')}
+                            </button>
+                            <button class="btn btn-secondary btn-icon-only" title="Edit Event" onclick="events.openFormModal('edit', '${evt.id}')">
+                                ${utils.getSvg('pencil')}
+                            </button>
+                            <button class="btn btn-secondary btn-icon-only" title="Delete Event" onclick="crud.deleteEvent('${evt.id}')" style="color:var(--danger);">
+                                ${utils.getSvg('trash')}
+                            </button>
+                        ` : `
+                            <button class="btn btn-secondary" style="width: 100%; border-radius: 8px; font-size: 0.85rem;" onclick="events.openDetails('${evt.id}')">
+                                View Details
+                            </button>
+                        `}
                     </div>
                 </div>
             `;
@@ -1804,12 +2025,11 @@ const events = {
             document.getElementById('event-name').value = '';
             document.getElementById('event-category').value = '';
             document.getElementById('event-venue').value = '';
-            document.getElementById('event-status').value = 'Active';
+            document.getElementById('event-status').value = '';
             document.getElementById('event-logo').value = '';
             document.getElementById('event-description').value = '';
 
-            // Add default initial schedule row
-            crud.addScheduleRow('', '08:00', '12:00');
+            crud.addScheduleRow();
             crud.renderFacilitatorsChips();
             crud.renderAdvisersChips();
         } else {
@@ -1844,6 +2064,28 @@ const events = {
         // We will route search logic to match the event ID
         app.preloadedSearchQuery = eventId;
         app.router('search');
+    },
+
+    openGuestRegistrationModal(eventId) {
+        const evt = state.db.events.find(e => e.id === eventId);
+        if (!evt) return;
+
+        document.getElementById('guest-reg-event-id').value = eventId;
+        document.getElementById('guest-reg-modal-title').textContent = `Join "${evt.name}"`;
+        document.getElementById('guest-reg-name').value = '';
+        document.getElementById('guest-reg-course').value = 'BSIT';
+        document.getElementById('guest-reg-year').value = '';
+        document.getElementById('guest-reg-profile').value = '';
+
+        // Load batches dropdown options dynamically
+        const batchDropdown = document.getElementById('guest-reg-batch');
+        batchDropdown.innerHTML = '<option value="">Select batch</option>' +
+            state.db.batches.map(b => `<option value="${b.name}">${b.name} - ${utils.formatYearLevel(b.yearLevel)}</option>`).join('');
+        batchDropdown.onchange = () => {
+            document.getElementById('guest-reg-year').value = utils.getBatchYearLevel(batchDropdown.value);
+        };
+
+        ui.openModal('guest-registration-modal');
     }
 };
 
@@ -1872,10 +2114,10 @@ const participants = {
                     </select>
                 </div>
                 
-                <button class="btn btn-primary" onclick="participants.openFormModal('create')">
+                ${state.role === 'admin' ? `<button class="btn btn-primary" onclick="participants.openFormModal('create')">
                     ${utils.getSvg('plus')}
-                    Add Participant
-                </button>
+                    Add & Register Participant
+                </button>` : ''}
             </div>
 
             <!-- Table Target -->
@@ -1887,7 +2129,7 @@ const participants = {
                             <th>Participant Info</th>
                             <th>Batch</th>
                             <th>Course / Year</th>
-                            <th style="text-align:right;">Actions</th>
+                            ${state.role === 'admin' ? '<th style="text-align:right;">Actions</th>' : ''}
                         </tr>
                     </thead>
                     <tbody id="participants-tbody">
@@ -1923,7 +2165,7 @@ const participants = {
         if (filtered.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="5">
+                    <td colspan="${state.role === 'admin' ? '5' : '4'}">
                         ${ui.renderEmptyState("No participants found", "Add participants to manage rosters and registrations")}
                     </td>
                 </tr>
@@ -1943,15 +2185,15 @@ const participants = {
                     </div>
                 </td>
                 <td><span class="badge badge-completed">${p.batch}</span></td>
-                <td>${p.course} (Year ${p.yearLevel})</td>
-                <td style="text-align:right;">
+                <td>${p.course} (${utils.formatYearLevel(p.yearLevel)})</td>
+                ${state.role === 'admin' ? `<td style="text-align:right;">
                     <button class="btn btn-secondary btn-icon-only" onclick="participants.openFormModal('edit', '${p.id}')" title="Edit Profile">
                         ${utils.getSvg('pencil')}
                     </button>
                     <button class="btn btn-secondary btn-icon-only" onclick="crud.deleteParticipant('${p.id}')" title="Delete Profile" style="color:var(--danger); margin-left:0.25rem;">
                         ${utils.getSvg('trash')}
                     </button>
-                </td>
+                </td>` : ''}
             </tr>
         `).join('');
     },
@@ -1961,15 +2203,32 @@ const participants = {
 
         // Load dynamic batches dropdown options
         const dropdown = document.getElementById('participant-batch');
-        dropdown.innerHTML = state.db.batches.map(b => `<option value="${b.name}">${b.name}</option>`).join('') || '<option value="">No batches configured</option>';
+        dropdown.innerHTML = '<option value="">Select batch</option>' +
+            state.db.batches.map(b => `<option value="${b.name}">${b.name} - ${utils.formatYearLevel(b.yearLevel)}</option>`).join('');
+
+        const eventDropdown = document.getElementById('participant-event');
+        const eventGroup = document.getElementById('participant-event-group');
+        eventDropdown.innerHTML = '<option value="">Select active event</option>' +
+            state.db.events.filter(e => e.status === 'Active').map(e => `<option value="${e.id}">${e.name} [${e.category}]</option>`).join('');
+
+        dropdown.onchange = () => {
+            const yearLevel = utils.getBatchYearLevel(dropdown.value);
+            document.getElementById('participant-year').value = yearLevel;
+            document.getElementById('participant-year-display').value = yearLevel ? utils.formatYearLevel(yearLevel) : '';
+        };
 
         if (mode === 'create') {
-            document.getElementById('participant-modal-title').textContent = "Add Participant";
+            document.getElementById('participant-modal-title').textContent = "Add & Register Participant";
             document.getElementById('participant-id').value = utils.generateId('PAR', state.db.participants);
             document.getElementById('participant-name').value = '';
-            document.getElementById('participant-course').value = '';
-            document.getElementById('participant-year').value = '1';
+            document.getElementById('participant-batch').value = '';
+            document.getElementById('participant-course').value = 'BSIT';
+            document.getElementById('participant-year').value = '';
+            document.getElementById('participant-year-display').value = '';
+            document.getElementById('participant-event').value = '';
             document.getElementById('participant-profile').value = '';
+            document.getElementById('participant-form-submit-btn').textContent = "Save & Register";
+            eventGroup.style.display = 'block';
         } else {
             const p = state.db.participants.find(part => part.id === pId);
             if (!p) return;
@@ -1978,9 +2237,13 @@ const participants = {
             document.getElementById('participant-id').value = p.id;
             document.getElementById('participant-name').value = p.name;
             document.getElementById('participant-batch').value = p.batch;
-            document.getElementById('participant-course').value = p.course;
-            document.getElementById('participant-year').value = p.yearLevel;
+            document.getElementById('participant-course').value = 'BSIT';
+            document.getElementById('participant-year').value = utils.getBatchYearLevel(p.batch) || p.yearLevel || '';
+            document.getElementById('participant-year-display').value = utils.formatYearLevel(document.getElementById('participant-year').value);
+            document.getElementById('participant-event').value = '';
             document.getElementById('participant-profile').value = p.profile;
+            document.getElementById('participant-form-submit-btn').textContent = "Save Participant";
+            eventGroup.style.display = 'none';
         }
 
         ui.openModal('participant-modal');
@@ -2012,10 +2275,7 @@ const registrations = {
                     </div>
                 </div>
                 
-                <button class="btn btn-primary" onclick="registrations.openFormModal()">
-                    ${utils.getSvg('plus')}
-                    Register Participant
-                </button>
+                <span class="badge badge-active">Auto-filled from Add & Register Participant</span>
             </div>
 
             <!-- Table Target -->
@@ -2027,7 +2287,7 @@ const registrations = {
                             <th>Participant Info</th>
                             <th>Event Joined</th>
                             <th>Schedules</th>
-                            <th style="text-align:right;">Actions</th>
+                            ${state.role === 'admin' ? '<th style="text-align:right;">Actions</th>' : ''}
                         </tr>
                     </thead>
                     <tbody id="reg-tbody">
@@ -2071,8 +2331,8 @@ const registrations = {
         if (filtered.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="5">
-                        ${ui.renderEmptyState("No registration logs found", "Click Register Participant to join participants to active events")}
+                    <td colspan="${state.role === 'admin' ? '5' : '4'}">
+                        ${ui.renderEmptyState("No registration logs found", state.role === 'admin' ? "Use Add & Register Participant to create a student record and event registration together" : "No participant registrations are available yet")}
                     </td>
                 </tr>
             `;
@@ -2100,11 +2360,11 @@ const registrations = {
                 <td style="font-size: 0.8rem; color: var(--text-muted);">
                     ${r.eSchedules.map(s => `${utils.formatDate(s.date)} (${s.start}-${s.end})`).join('<br>')}
                 </td>
-                <td style="text-align:right;">
+                ${state.role === 'admin' ? `<td style="text-align:right;">
                     <button class="btn btn-secondary btn-icon-only" style="color:var(--danger);" onclick="crud.deleteRegistration('${r.id}')" title="Cancel Registration">
                         ${utils.getSvg('trash')}
                     </button>
-                </td>
+                </td>` : ''}
             </tr>
         `).join('');
     },
@@ -2176,7 +2436,7 @@ const settings = {
                             ${utils.getSvg('tag')}
                             Batch Management Directory
                         </h3>
-                        <button class="btn btn-primary btn-icon-only" style="width:30px;height:30px;border-radius:6px;" onclick="ui.openModal('batch-modal')">
+                        <button class="btn btn-primary btn-icon-only" style="width:30px;height:30px;border-radius:6px;" onclick="settings.openBatchModal()">
                             ${utils.getSvg('plus')}
                         </button>
                     </div>
@@ -2188,7 +2448,10 @@ const settings = {
                                     <div class="participant-avatar" style="width:36px;height:36px;border-radius:8px;">
                                         ${b.logo ? `<img src="${b.logo}" alt="batch">` : utils.getInitials(b.name)}
                                     </div>
-                                    <strong style="font-size:0.95rem;">${utils.escapeHtml(b.name)}</strong>
+                                    <div>
+                                        <strong style="font-size:0.95rem;">${utils.escapeHtml(b.name)}</strong>
+                                        <div style="font-size:0.75rem; color:var(--text-muted);">${utils.formatYearLevel(b.yearLevel)}</div>
+                                    </div>
                                 </div>
                                 <button class="btn btn-secondary btn-icon-only" style="width:28px;height:28px;color:var(--danger);" onclick="crud.deleteBatch('${b.id}')">
                                     ${utils.getSvg('trash')}
@@ -2204,14 +2467,19 @@ const settings = {
                         ${utils.getSvg('trash')}
                         System Reset & Maintenance
                     </h3>
-                    <p style="font-size:0.875rem; color:var(--text-muted);">Resetting the database will overwrite all your events, participants, and registrations with the default mock seed records. Action is irreversible.</p>
+                    <p style="font-size:0.875rem; color:var(--text-muted);">Resetting the database will overwrite all your events, participants, and registrations with the demo seed records. Action is irreversible.</p>
                     <div>
-                        <button class="btn btn-danger" onclick="settings.resetDatabase()">Reset Database to Mock Seed</button>
+                        <button class="btn btn-danger" onclick="settings.resetDatabase()">Reset Database to Demo Seed</button>
                     </div>
                 </div>
 
             </div>
         `;
+    },
+
+    openBatchModal() {
+        document.getElementById('batch-form').reset();
+        ui.openModal('batch-modal');
     },
 
     async saveCredentials(e) {
@@ -2236,6 +2504,9 @@ const settings = {
             localStorage.setItem(CONFIG.STORAGE_KEYS.IS_DEMO, 'false');
 
             state.db = test.data;
+            api.ensureSchema();
+            lastRemoteSnapshot = JSON.stringify(state.db);
+            app.startSharedSync();
             ui.showToast("Settings saved and database connected successfully!", "success");
             ui.renderActiveTab();
         } else {
@@ -2279,7 +2550,7 @@ const settings = {
     resetDatabase() {
         ui.showConfirm(
             "Reset Database",
-            "This will overwrite all events, participants, and logs with default seed mock data. Proceed?",
+            "This will overwrite all events, participants, and logs with demo seed data. Proceed?",
             async (confirmed) => {
                 if (confirmed) {
                     state.db = JSON.parse(JSON.stringify(CONFIG.MOCK_DB));
@@ -2329,13 +2600,15 @@ const app = {
         });
 
         // 5. Load JSONBin configuration from localStorage
-        const localApiKey = localStorage.getItem(CONFIG.STORAGE_KEYS.API_KEY) || '';
-        const localBinId = localStorage.getItem(CONFIG.STORAGE_KEYS.BIN_ID) || '';
-        const localIsDemo = localStorage.getItem(CONFIG.STORAGE_KEYS.IS_DEMO) !== 'false';
+        const localApiKey = localStorage.getItem(CONFIG.STORAGE_KEYS.API_KEY);
+        const localBinId = localStorage.getItem(CONFIG.STORAGE_KEYS.BIN_ID);
+        const localIsDemo = localStorage.getItem(CONFIG.STORAGE_KEYS.IS_DEMO);
 
-        state.config.apiKey = localApiKey;
-        state.config.binId = localBinId;
-        state.config.isDemo = localIsDemo || !localApiKey || !localBinId;
+        state.config.apiKey = localApiKey || state.config.apiKey;
+        state.config.binId = localBinId || state.config.binId;
+        state.config.isDemo = localIsDemo === null
+            ? (!state.config.apiKey || !state.config.binId)
+            : localIsDemo !== 'false';
 
         // 6. Launch clock ticks
         this.startClock();
@@ -2345,11 +2618,46 @@ const app = {
 
         // 8. Render active tab
         this.router(state.activeTab);
+
+        // 9. Keep other linked users and browser tabs up to date
+        this.startSharedSync();
+        window.addEventListener('storage', (event) => {
+            if (event.key === CONFIG.STORAGE_KEYS.LAST_SYNC) {
+                state.db = JSON.parse(localStorage.getItem('ems_local_db')) || state.db;
+                api.ensureSchema();
+                lastRemoteSnapshot = JSON.stringify(state.db);
+                ui.renderActiveTab();
+                ui.showToast("Updates loaded from another open tab.", "success");
+            }
+        });
     },
 
     router(tabId) {
         state.activeTab = tabId;
         ui.renderActiveTab();
+    },
+
+    handleRoleChange(role) {
+        state.role = role;
+        // Redirect client from admin tabs
+        const adminTabs = ['settings'];
+        if (role === 'client' && adminTabs.includes(state.activeTab)) {
+            state.activeTab = 'dashboard';
+        }
+        ui.renderActiveTab();
+    },
+
+    startSharedSync() {
+        if (syncPollTimer) {
+            clearInterval(syncPollTimer);
+            syncPollTimer = null;
+        }
+
+        if (state.config.isDemo || !state.config.apiKey || !state.config.binId) return;
+
+        syncPollTimer = setInterval(() => {
+            api.refreshFromServer({ silent: true });
+        }, 10000);
     },
 
     startClock() {
