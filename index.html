@@ -15,7 +15,7 @@
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
-            <span class="logo-title">Techlympics EMS</span>
+            <span class="logo-title">Antigravity EMS</span>
         </div>
 
         <nav class="nav-list">
@@ -102,9 +102,12 @@
             <!-- Profile Placeholder -->
             <div class="nav-right">
                 <select class="filter-select" id="role-selector-dropdown" style="margin-right: 1.25rem; padding: 0.45rem 2rem 0.45rem 0.75rem; font-size: 0.8rem; border-radius: 8px; border-color: var(--border-color); background-color: var(--card-bg);" onchange="app.handleRoleChange(this.value)">
-                    <option value="admin" selected>Admin View</option>
-                    <option value="client">Client View</option>
+                    <option value="client" selected>Client View</option>
+                    <option value="admin">Admin View</option>
                 </select>
+                <button class="btn btn-secondary btn-icon-only admin-lock-btn" id="admin-lock-btn" style="display: none; margin-right: 0.5rem;" onclick="app.lockAdmin()" title="Lock Admin (Sign Out)">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                </button>
                 <div class="profile-placeholder" id="profile-block" onclick="app.router('settings')">
                     <div class="profile-avatar" id="profile-avatar-char">SA</div>
                     <div class="profile-info">
@@ -456,6 +459,42 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="ui.closeModal('guest-registration-modal')">Cancel</button>
                     <button type="submit" class="btn btn-primary">Join Event</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Admin Password Modal -->
+    <div class="modal-overlay" id="admin-password-modal">
+        <div class="modal-container" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 class="modal-title">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="var(--warning)" style="width:22px;height:22px;margin-right:0.35rem;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                    Admin Authentication
+                </h3>
+                <button class="modal-close" onclick="app.cancelAdminLogin()" aria-label="Close modal">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <form id="admin-password-form" onsubmit="app.submitAdminPassword(event)">
+                <div class="modal-body">
+                    <p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; margin-bottom: 0.5rem;">Enter the admin password to access management features. All admin actions will be available after authentication.</p>
+                    <div class="form-group">
+                        <label for="admin-pw-input">Password</label>
+                        <input type="password" class="form-control" id="admin-pw-input" required placeholder="Enter admin password..." autocomplete="off">
+                    </div>
+                    <p id="admin-pw-error" style="color: var(--danger); font-size: 0.8rem; font-weight: 600; display: none;">Incorrect password. Please try again.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="app.cancelAdminLogin()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width:16px;height:16px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" /></svg>
+                        Unlock Admin
+                    </button>
                 </div>
             </form>
         </div>
