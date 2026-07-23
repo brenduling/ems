@@ -13,7 +13,8 @@ const CONFIG = {
         API_KEY: 'ems_jsonbin_api_key',
         BIN_ID: 'ems_jsonbin_bin_id',
         IS_DEMO: 'ems_jsonbin_is_demo',
-        LAST_SYNC: 'ems_last_sync_signal'
+        LAST_SYNC: 'ems_last_sync_signal',
+        ADMIN_PASSWORD: 'ems_admin_password'
     },
     // Seed Database for Demo / Mock mode
     MOCK_DB: {
@@ -121,7 +122,7 @@ const CONFIG = {
 // Application State
 const state = {
     activeTab: 'dashboard',
-    role: 'admin', // 'admin' or 'client'
+    role: 'client', // 'admin' or 'client' — defaults to client, requires password for admin
     db: {
         events: [],
         participants: [],
@@ -133,9 +134,9 @@ const state = {
     config: {
         apiKey: '$2a$10$Tro6Ud5UHq2VqKQnp8Kxo.1MFLWorIUvmpahlY7t9jqDPWr0Xg2em',
         binId: '6a615478da38895dfe81c143',
-        isDemo: false
+        isDemo: false,
         // isDemo: true
-
+        adminPassword: 'admin123' // Default admin password, changeable in Settings
     }
 };
 
@@ -475,6 +476,12 @@ const ui = {
             nameBlock.textContent = 'System Admin';
             roleBlock.textContent = 'EMS Manager';
             profileBlock.style.pointerEvents = 'auto';
+        }
+
+        // Show/hide admin lock button
+        const lockBtn = document.getElementById('admin-lock-btn');
+        if (lockBtn) {
+            lockBtn.style.display = state.role === 'admin' ? 'inline-flex' : 'none';
         }
 
         // Update nav title
@@ -1001,7 +1008,7 @@ const crud = {
 
     handleGuestRegistrationSubmit(e) {
         e.preventDefault();
-        if (!this.requireAdmin()) return;
+        // Guest registration is allowed for clients — no admin check
         const eId = document.getElementById('guest-reg-event-id').value;
         const name = document.getElementById('guest-reg-name').value.trim();
         const batch = document.getElementById('guest-reg-batch').value;
@@ -2002,8 +2009,9 @@ const events = {
                                 ${utils.getSvg('trash')}
                             </button>
                         ` : `
-                            <button class="btn btn-secondary" style="width: 100%; border-radius: 8px; font-size: 0.85rem;" onclick="events.openDetails('${evt.id}')">
-                                View Details
+                            <button class="btn btn-primary" style="width: 100%; border-radius: 8px; font-size: 0.85rem;" onclick="events.openGuestRegistrationModal('${evt.id}')">
+                                ${utils.getSvg('plus')}
+                                Join Event
                             </button>
                         `}
                     </div>
@@ -2061,9 +2069,181 @@ const events = {
     },
 
     openDetails(eventId) {
-        // We will route search logic to match the event ID
-        app.preloadedSearchQuery = eventId;
-        app.router('search');
+        const evt = state.db.events.find(e => e.id === eventId);
+        if (!evt) return;
+
+        // Update page title
+        document.getElementById('page-title').textContent = evt.name;
+
+        const container = document.getElementById('main-content');
+        const regs = state.db.registrations.filter(r => r.eventId === evt.id);
+        const regParticipants = regs.map(r => state.db.participants.find(p => p.id === r.participantId)).filter(Boolean);
+
+        // Group participants by batch
+        const batchGroups = {};
+        regParticipants.forEach(p => {
+            const batchKey = p.batch || 'Unassigned';
+            if (!batchGroups[batchKey]) batchGroups[batchKey] = [];
+            batchGroups[batchKey].push(p);
+        });
+
+        // Sort batch names alphabetically
+        const sortedBatchNames = Object.keys(batchGroups).sort();
+
+        container.innerHTML = `
+            <div class="event-detail-container">
+                <!-- Back Button -->
+                <button class="back-btn" onclick="app.router('events')">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+                    Back to Events
+                </button>
+
+                <!-- Hero Section -->
+                <div class="event-detail-hero">
+                    <div class="event-detail-logo">
+                        ${evt.logo ? `<img src="${evt.logo}" alt="${evt.name}">` : utils.getInitials(evt.name)}
+                    </div>
+                    <div class="event-detail-info">
+                        <span class="event-detail-category">${utils.escapeHtml(evt.category)}</span>
+                        <h1 class="event-detail-title">${utils.escapeHtml(evt.name)}</h1>
+                        <span class="badge badge-${evt.status.toLowerCase()}" style="align-self:flex-start;">${evt.status}</span>
+                        ${evt.description ? `<p class="event-detail-desc">${utils.escapeHtml(evt.description)}</p>` : ''}
+                        <div class="event-detail-actions-row">
+                            ${state.role === 'admin' ? `
+                                <button class="btn btn-primary" onclick="events.openFormModal('edit', '${evt.id}')">
+                                    ${utils.getSvg('pencil')} Edit Event
+                                </button>
+                                <button class="btn btn-secondary" onclick="participants.openFormModal('create')">
+                                    ${utils.getSvg('plus')} Register Participant
+                                </button>
+                                <button class="btn btn-secondary" onclick="crud.deleteEvent('${evt.id}')" style="color:var(--danger); border-color:var(--danger);">
+                                    ${utils.getSvg('trash')} Delete
+                                </button>
+                            ` : `
+                                ${evt.status === 'Active' ? `
+                                <button class="btn btn-primary" onclick="events.openGuestRegistrationModal('${evt.id}')">
+                                    ${utils.getSvg('plus')} Join This Event
+                                </button>` : ''}
+                            `}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Meta Grid -->
+                <div class="detail-meta-grid">
+                    <!-- Schedules -->
+                    <div class="detail-meta-card">
+                        <div class="detail-meta-title">
+                            ${utils.getSvg('calendar')}
+                            Schedules (${evt.multipleSchedules.length})
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:0.5rem;">
+                            ${evt.multipleSchedules.map(s => `
+                                <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0.65rem; background-color:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:8px;">
+                                    <div>
+                                        <strong style="font-size:0.9rem;">${utils.formatDate(s.date)}</strong>
+                                        <div style="font-size:0.75rem; color:var(--text-muted);">${s.start} — ${s.end}</div>
+                                    </div>
+                                    <span class="badge badge-active" style="font-size:0.65rem;">${new Date(s.date) >= new Date() ? 'Upcoming' : 'Past'}</span>
+                                </div>
+                            `).join('') || '<p style="font-size:0.85rem; color:var(--text-muted);">No schedules set.</p>'}
+                        </div>
+                    </div>
+
+                    <!-- Venue -->
+                    <div class="detail-meta-card">
+                        <div class="detail-meta-title">
+                            ${utils.getSvg('map')}
+                            Venue
+                        </div>
+                        <div style="font-size:1.1rem; font-weight:700;">${utils.escapeHtml(evt.venue)}</div>
+                    </div>
+
+                    <!-- Facilitators -->
+                    <div class="detail-meta-card">
+                        <div class="detail-meta-title">
+                            ${utils.getSvg('users')}
+                            Facilitators (${evt.facilitators.length})
+                        </div>
+                        <div style="display:flex; flex-wrap:wrap; gap:0.35rem;">
+                            ${evt.facilitators.map(f => `<span class="roster-chip">${utils.escapeHtml(f)}</span>`).join('') || '<span style="font-size:0.85rem; color:var(--text-muted);">None assigned</span>'}
+                        </div>
+                    </div>
+
+                    <!-- Advisers -->
+                    <div class="detail-meta-card">
+                        <div class="detail-meta-title">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                            Advisers (${evt.advisers.length})
+                        </div>
+                        <div style="display:flex; flex-wrap:wrap; gap:0.35rem;">
+                            ${evt.advisers.map(a => `<span class="roster-chip" style="background-color:var(--warning-light); border-color:var(--warning);">${utils.escapeHtml(a)}</span>`).join('') || '<span style="font-size:0.85rem; color:var(--text-muted);">None assigned</span>'}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Registered Students per Batch -->
+                <div style="display:flex; flex-direction:column; gap:1rem;">
+                    <h2 style="font-size:1.15rem; font-weight:800; display:flex; align-items:center; gap:0.5rem;">
+                        ${utils.getSvg('users')}
+                        Registered Students (${regParticipants.length})
+                    </h2>
+
+                    ${sortedBatchNames.length > 0 ? sortedBatchNames.map(batchName => {
+                        const students = batchGroups[batchName];
+                        const batchObj = state.db.batches.find(b => b.name.toLowerCase() === batchName.toLowerCase());
+                        const yearLevel = batchObj ? utils.formatYearLevel(batchObj.yearLevel) : 'N/A';
+                        const batchLogo = batchObj?.logo || '';
+                        const batchId = 'batch-detail-' + batchName.replace(/\s+/g, '-').toLowerCase();
+
+                        return `
+                            <div class="batch-group-section">
+                                <div class="batch-group-header expanded" onclick="events.toggleBatchGroup('${batchId}', this)">
+                                    <div class="batch-group-header-left">
+                                        <div class="batch-group-avatar">
+                                            ${batchLogo ? `<img src="${batchLogo}" alt="${batchName}">` : utils.getInitials(batchName)}
+                                        </div>
+                                        <div>
+                                            <div class="batch-group-name">Batch: ${utils.escapeHtml(batchName)}</div>
+                                            <div style="font-size:0.75rem; color:var(--text-muted);">${yearLevel} • BSIT</div>
+                                        </div>
+                                        <span class="batch-group-badge">${students.length} student${students.length !== 1 ? 's' : ''}</span>
+                                    </div>
+                                    <svg class="batch-group-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+                                </div>
+                                <div class="batch-group-body open" id="${batchId}">
+                                    <div class="batch-group-students">
+                                        ${students.map((p, idx) => `
+                                            <div class="student-row">
+                                                <span style="font-size:0.75rem; color:var(--text-muted); width:28px; text-align:center; font-weight:700;">${idx + 1}</span>
+                                                <div class="participant-avatar" style="width:34px;height:34px;font-size:0.8rem;">
+                                                    ${p.profile ? `<img src="${p.profile}" alt="${p.name}">` : utils.getInitials(p.name)}
+                                                </div>
+                                                <div class="student-row-info">
+                                                    <span class="student-row-name">${utils.escapeHtml(p.name)}</span>
+                                                    <span class="student-row-meta">${p.course} • ${utils.formatYearLevel(p.yearLevel)} • ${p.id}</span>
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('') : `
+                        <div class="panel-card" style="padding: 2rem;">
+                            ${ui.renderEmptyState("No registered students yet", state.role === 'admin' ? "Use 'Register Participant' above to add students to this event." : "Be the first to join! Click 'Join This Event' above.")}
+                        </div>
+                    `}
+                </div>
+            </div>
+        `;
+    },
+
+    toggleBatchGroup(batchId, headerEl) {
+        const body = document.getElementById(batchId);
+        if (!body) return;
+        body.classList.toggle('open');
+        headerEl.classList.toggle('expanded');
     },
 
     openGuestRegistrationModal(eventId) {
@@ -2276,6 +2456,11 @@ const registrations = {
                 </div>
                 
                 <span class="badge badge-active">Auto-filled from Add & Register Participant</span>
+                ${state.role === 'admin' ? `
+                <button class="btn btn-primary" onclick="registrations.openFormModal()">
+                    ${utils.getSvg('plus')}
+                    Add Registration
+                </button>` : ''}
             </div>
 
             <!-- Table Target -->
